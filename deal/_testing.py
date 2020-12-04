@@ -101,11 +101,10 @@ def get_validators(func: typing.Any) -> typing.Iterator[typing.Callable]:
         func = func.__wrapped__
 
 
-def get_examples(
+def get_args_kwargs_strategy_for(
     func: typing.Callable,
     kwargs: typing.Dict[str, typing.Any],
-    count: int,
-) -> typing.List[ArgsKwargsType]:
+) -> hypothesis.strategies.SearchStrategy[ArgsKwargsType]:
     kwargs = kwargs.copy()
     for name, value in kwargs.items():
         if isinstance(value, hypothesis.strategies.SearchStrategy):
@@ -117,15 +116,23 @@ def get_examples(
 
     pass_along_variables.__signature__ = signature(func)    # type: ignore
     update_wrapper(wrapper=pass_along_variables, wrapped=func)
-    strategy = hypothesis.strategies.builds(pass_along_variables, **kwargs)
+    return hypothesis.strategies.builds(pass_along_variables, **kwargs)
+
+
+def get_examples(
+    func: typing.Callable,
+    kwargs: typing.Dict[str, typing.Any],
+    count: int,
+) -> typing.List[ArgsKwargsType]:
     validators = tuple(get_validators(func))
     examples = []
 
-    @hypothesis.given(strategy)
+    @hypothesis.given(get_args_kwargs_strategy_for(func, kwargs))
     @hypothesis.settings(
         database=None,
         max_examples=count,
         deadline=None,
+        derandomize=True,
         verbosity=hypothesis.Verbosity.quiet,
         phases=(hypothesis.Phase.generate,),
         suppress_health_check=hypothesis.HealthCheck.all(),
@@ -231,7 +238,8 @@ class HypothesisWrapper:
 
 
 def hypothesis_wrapper(func: typing.Callable, check_types: bool = True) -> HypothesisWrapper:
-    """Wrapper for a function to communicate back into [hypothesis][hypothesis] contract violations.
+    """Wrapper for a function to communicate precondition violations or
+    allowed exceptions into [hypothesis][hypothesis].
 
     ```pycon
     >>> import deal
@@ -262,3 +270,15 @@ def hypothesis_wrapper(func: typing.Callable, check_types: bool = True) -> Hypot
         check_types=check_types,
     )
     return proxies(func)(wrapper)
+
+
+def get_hypothesis_test(func, **kwargs):
+    @hypothesis.given(get_args_kwargs_strategy_for(func, kwargs))
+    def test(kw):
+        hypothesis_wrapper(func)(**kw)
+
+    # add some magic to make the Hypothesis database work nicely here
+    from hypothesis.internal.reflection import function_digest
+
+    test.hypothesis.inner_test._hypothesis_internal_add_digest = function_digest(func)
+    return test
